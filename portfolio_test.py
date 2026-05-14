@@ -15,6 +15,7 @@ from tabulate import tabulate
 
 import portfolio
 import report
+from t212_fetcher import apply_legacy_remap
 
 
 DB_PATH = "screener.db"
@@ -30,6 +31,8 @@ POSITIONS_INPUT = [
     {"ticker": "AJB.L", "quantity": 500, "avg_buy_price": 1.45},
     {"ticker": "HOC.L", "quantity": 300, "avg_buy_price": 5.80},
     {"ticker": "KLR.L", "quantity": 200, "avg_buy_price": 20.50},
+    {"ticker": "FB",    "quantity": 2,   "avg_buy_price": 481.20},
+    {"ticker": "IPOE",  "quantity": 105, "avg_buy_price": 19.46},
 ]
 
 
@@ -52,17 +55,27 @@ def _load_ticker_context(db_path: str, tickers: List[str]) -> dict:
 
 
 def _build_positions() -> List[dict]:
-    tickers = [p["ticker"] for p in POSITIONS_INPUT]
+    # Apply legacy remap up-front so DB lookups resolve to current tickers
+    remapped_positions = []
+    for p in POSITIONS_INPUT:
+        new_ticker, was_remapped = apply_legacy_remap(p["ticker"])
+        remapped_positions.append({
+            **p,
+            "ticker": new_ticker,
+            "remapped": was_remapped,
+            "original_ticker": p["ticker"] if was_remapped else None,
+        })
+
+    tickers = [p["ticker"] for p in remapped_positions]
     ctx = _load_ticker_context(DB_PATH, tickers)
     enriched = []
-    for p in POSITIONS_INPUT:
+    for p in remapped_positions:
         c = ctx.get(p["ticker"], {})
         price = c.get("latest_close")
         if price is None:
             raise RuntimeError(
                 f"{p['ticker']} not in screener.db — run screener.py first"
             )
-        # FTSE tickers report close in pence; bring into pounds to match avg_buy_price
         if p["ticker"].upper().endswith(".L"):
             price = price / 100.0
         enriched.append({

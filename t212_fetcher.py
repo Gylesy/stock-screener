@@ -31,6 +31,16 @@ PORTFOLIO_ENDPOINT = "/equity/positions"
 CASH_ENDPOINT = "/equity/account/cash"
 OUTPUT_PATH = "portfolio.json"
 
+# T212 retains legacy symbols on positions held through a rename/merger.
+# Map them onto the current market ticker so downstream lookups (screener.db)
+# resolve correctly.
+LEGACY_TICKER_MAP = {
+    "FB": "META",     # Facebook → Meta (Oct 2021)
+    "IPOE": "SOFI",   # SCH-VI SPAC → SoFi (Jun 2021)
+    "TWTR": "X",      # Twitter → X (renamed but delisted; here for completeness)
+    "ZNGA": "TTWO",   # Zynga acquired by Take-Two (May 2022)
+}
+
 MAX_RETRIES = 3
 RETRY_DELAY_RATE_LIMIT_S = 5
 RETRY_DELAY_CONNECTION_S = 2
@@ -52,6 +62,25 @@ def get_auth_header(api_key: str, api_secret: str) -> str:
 # Ticker normalisation
 
 
+def _normalise_no_remap(t212_ticker: str) -> str:
+    """Symbol-only normalisation (no legacy remap). Internal helper."""
+    if not t212_ticker:
+        return ""
+    parts = t212_ticker.split("_")
+    symbol = parts[0].replace("/", "-")
+    exchange = parts[1].upper() if len(parts) > 1 else ""
+    return f"{symbol}.L" if "LON" in exchange else symbol
+
+
+def apply_legacy_remap(ticker: str) -> tuple[str, bool]:
+    """Return (final_ticker, was_remapped). For a ticker present in
+    LEGACY_TICKER_MAP, returns the mapped target and `True`; otherwise
+    returns the input unchanged with `False`.
+    """
+    new_ticker = LEGACY_TICKER_MAP.get(ticker, ticker)
+    return new_ticker, new_ticker != ticker
+
+
 def normalise_t212_ticker(t212_ticker: str) -> str:
     """Map T212 internal ticker → screener-side ticker.
 
@@ -62,15 +91,12 @@ def normalise_t212_ticker(t212_ticker: str) -> str:
         SHEL_LON_EQ     -> SHEL.L
         BRK/B_US_EQ     -> BRK-B
         BF/B_US_EQ      -> BF-B
+        FB_US_EQ        -> META   (via legacy remap)
+        IPOE_US_EQ      -> SOFI   (via legacy remap)
     """
-    if not t212_ticker:
-        return ""
-    parts = t212_ticker.split("_")
-    symbol = parts[0].replace("/", "-")
-    exchange = parts[1].upper() if len(parts) > 1 else ""
-    if "LON" in exchange:
-        return f"{symbol}.L"
-    return symbol
+    pre = _normalise_no_remap(t212_ticker)
+    final, _ = apply_legacy_remap(pre)
+    return final
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +164,8 @@ def _normalise_position(pos: dict) -> dict:
     """
     instrument = pos.get("instrument") or {}
     raw_ticker = instrument.get("ticker", "")
-    norm = normalise_t212_ticker(raw_ticker)
+    pre_remap = _normalise_no_remap(raw_ticker)
+    norm, remapped = apply_legacy_remap(pre_remap)
 
     qty = float(pos.get("quantity") or 0)
     native_avg = float(pos.get("averagePricePaid") or 0)
@@ -156,6 +183,8 @@ def _normalise_position(pos: dict) -> dict:
 
     return {
         "ticker": norm,
+        "remapped": remapped,
+        "original_ticker": pre_remap if remapped else None,
         "t212_ticker": raw_ticker,
         "company_name": instrument.get("name"),
         "native_currency": instrument.get("currency"),
@@ -256,6 +285,14 @@ def main() -> int:
         json.dump(result, f, indent=2)
 
     _print_positions(result["positions"])
+    remap_count = sum(1 for p in result["positions"] if p.get("remapped"))
+    if remap_count:
+        remaps = ", ".join(
+            f"{p['original_ticker']}→{p['ticker']}"
+            for p in result["positions"] if p.get("remapped")
+        )
+        print()
+        print(f"Legacy ticker mapping working — {remap_count} positions remapped ({remaps})")
     print()
     print(f"Portfolio saved: {len(result['positions'])} positions, "
           f"cash {result['cash']:.2f} (invested+cash total {result['total_value']:.2f})")

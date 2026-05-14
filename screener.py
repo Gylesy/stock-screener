@@ -521,6 +521,8 @@ def parse_args() -> argparse.Namespace:
                    help="Run with a fixed 10-ticker smoke-test universe.")
     p.add_argument("--smoke-ftse100", action="store_true",
                    help="Run with a 5-ticker FTSE100 smoke universe (SHEL, AZN, HSBA, ULVR, BP).")
+    p.add_argument("--smoke-russell1000", action="store_true",
+                   help="Run with a 5-ticker Russell 1000 smoke universe (PLTR, UBER, LMND, ZETA, IREN).")
     p.add_argument("--db", default=DB_PATH, help="SQLite DB path")
     p.add_argument("--report", default=REPORT_PATH, help="HTML report output path")
     p.add_argument("--no-report", action="store_true", help="Skip HTML report generation")
@@ -529,7 +531,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.smoke_ftse100:
+    if args.smoke_russell1000:
+        print("== SMOKE TEST MODE: Russell 1000 (5 tickers) ==")
+        universe = tickers_mod.russell1000_smoke_universe()
+    elif args.smoke_ftse100:
         print("== SMOKE TEST MODE: FTSE 100 (5 tickers) ==")
         universe = tickers_mod.ftse100_smoke_universe()
     elif args.smoke:

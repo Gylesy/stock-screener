@@ -23,7 +23,16 @@ SP500_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 NASDAQ100_URL = "https://en.wikipedia.org/wiki/Nasdaq-100"
 FTSE100_URL = "https://en.wikipedia.org/wiki/FTSE_100_Index"
 FTSE250_URL = "https://en.wikipedia.org/wiki/FTSE_250_Index"
+RUSSELL1000_WIKI_URL = "https://en.wikipedia.org/wiki/Russell_1000_Index"
+RUSSELL1000_IWB_CSV_URL = (
+    "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
+    "1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
+)
 RUSSELL2000_CSV = "russell2000.csv"
+
+# Tickers that aren't real equities (ETF holdings CSVs include placeholders).
+_NON_EQUITY_PREFIXES = ("USD", "EUR", "GBP", "JPY", "CASH", "MARGIN", "XTSLA")
+_NON_EQUITY_KEYWORDS = ("FUTURE", "FORWARD", "OPTION", "SWAP", "INDEX")
 
 
 def _fetch_html(url: str) -> str:
@@ -130,6 +139,99 @@ def fetch_ftse250() -> List[str]:
     return _scrape_ftse_index(FTSE250_URL, "FTSE250")
 
 
+def _fetch_russell1000_wikipedia() -> List[str]:
+    """Try the Wikipedia Russell 1000 page first — most years it has no full
+    constituent table, so this is expected to return [] and trigger the fallback.
+    """
+    try:
+        html = _fetch_html(RUSSELL1000_WIKI_URL)
+    except Exception:
+        return []
+    soup = BeautifulSoup(html, "html.parser")
+    for table in soup.find_all("table", class_="wikitable"):
+        idx = _find_column_index(table, ["Symbol", "Ticker"])
+        if idx is None:
+            continue
+        raw = _extract_column(table, idx)
+        # Sanity check: a real constituent table should have >500 rows.
+        if len(raw) >= 500:
+            return [t.upper().replace(".", "-") for t in raw if t.strip()]
+    return []
+
+
+def _parse_iwb_csv(content: str) -> List[str]:
+    """Parse the iShares IWB holdings CSV.
+
+    The file has 8–10 metadata lines at the top (fund name, date, NAV) then a
+    header row whose first cell is literally "Ticker", then one row per holding.
+    """
+    import csv
+    import io
+
+    reader = csv.reader(io.StringIO(content))
+    rows = [r for r in reader if r]
+    header_idx = None
+    for i, row in enumerate(rows):
+        if row and row[0].strip().strip('"').lower() == "ticker":
+            header_idx = i
+            break
+    if header_idx is None:
+        return []
+
+    headers = [h.strip().lower() for h in rows[header_idx]]
+    ticker_col = 0
+    asset_col = None
+    for i, h in enumerate(headers):
+        if h == "ticker":
+            ticker_col = i
+        elif h in ("asset class", "asset_class"):
+            asset_col = i
+
+    out: List[str] = []
+    for row in rows[header_idx + 1:]:
+        if not row or ticker_col >= len(row):
+            continue
+        ticker = row[ticker_col].strip().strip('"').upper()
+        if not ticker or ticker == "-":
+            continue
+        if asset_col is not None and asset_col < len(row):
+            asset = row[asset_col].strip().strip('"').lower()
+            if asset and "equity" not in asset:
+                continue
+        if ticker.startswith(_NON_EQUITY_PREFIXES):
+            continue
+        if any(k in ticker for k in _NON_EQUITY_KEYWORDS):
+            continue
+        # Tickers with embedded "-" can be legit (BRK-B, BF-B) so don't blanket reject.
+        # Tickers with periods are rare in the iShares feed; normalise just in case.
+        ticker = ticker.replace(".", "-")
+        out.append(ticker)
+    return out
+
+
+def fetch_russell1000() -> List[str]:
+    """Constituents of the Russell 1000.
+
+    Tries the Wikipedia page first (which usually has no full constituent
+    table); falls back to parsing the iShares IWB holdings CSV.
+    """
+    tickers = _fetch_russell1000_wikipedia()
+    if not tickers:
+        try:
+            resp = requests.get(
+                RUSSELL1000_IWB_CSV_URL,
+                headers=WIKI_HEADERS,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            tickers = _parse_iwb_csv(resp.text)
+        except Exception as e:
+            print(f"[tickers] Russell 1000 iShares fallback failed: {e}")
+            return []
+    print(f"[tickers] Russell 1000: {len(tickers)} tickers fetched")
+    return tickers
+
+
 def load_russell2000() -> List[str]:
     # Russell 2000 constituents aren't published on Wikipedia. Drop a CSV with
     # one symbol per line (header optional) at RUSSELL2000_CSV to populate.
@@ -154,6 +256,7 @@ def get_universe(verbose: bool = True) -> Dict[str, Set[str]]:
     sources = {
         "SP500": fetch_sp500(),
         "NASDAQ100": fetch_nasdaq100(),
+        "RUSSELL1000": fetch_russell1000(),
         "RUSSELL2000": load_russell2000(),
         "FTSE100": fetch_ftse100(),
         "FTSE250": fetch_ftse250(),
@@ -192,6 +295,20 @@ def ftse100_smoke_universe() -> Dict[str, Set[str]]:
         "HSBA.L": {"FTSE100"},
         "ULVR.L": {"FTSE100"},
         "BP.L":   {"FTSE100"},
+    }
+
+
+def russell1000_smoke_universe() -> Dict[str, Set[str]]:
+    """5-ticker Russell 1000 smoke universe (used by `screener.py --smoke-russell1000`).
+    These tickers are intentionally outside SP500/NASDAQ100 so we exercise the
+    new index membership tagging.
+    """
+    return {
+        "PLTR": {"RUSSELL1000"},
+        "UBER": {"RUSSELL1000"},
+        "LMND": {"RUSSELL1000"},
+        "ZETA": {"RUSSELL1000"},
+        "IREN": {"RUSSELL1000"},
     }
 
 

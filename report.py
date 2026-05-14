@@ -108,9 +108,10 @@ TEXT_COLS = {"ticker", "company_name", "sector", "analyst_rating", "golden_cross
 INDEX_PILL_CLASS = {
     "SP500": "pill-sp500",
     "NASDAQ100": "pill-nasdaq",
+    "RUSSELL1000": "pill-russell1000",
     "FTSE100": "pill-ftse100",
     "FTSE250": "pill-ftse250",
-    "RUSSELL2000": "pill-russell",
+    "RUSSELL2000": "pill-russell2000",
 }
 
 
@@ -649,12 +650,13 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     display: inline-block; padding: 1px 6px; margin: 1px 2px 1px 0;
     border-radius: 3px; font-size: 10px; font-weight: 600; color: #fff;
   }
-  .pill-sp500    { background: #1f5390; }
-  .pill-nasdaq   { background: #6a1b9a; }
-  .pill-ftse100  { background: #c62828; }
-  .pill-ftse250  { background: #ef6c00; }
-  .pill-russell  { background: #2e7d32; }
-  .pill-other    { background: #555; }
+  .pill-sp500       { background: #1f5390; }
+  .pill-nasdaq      { background: #6a1b9a; }
+  .pill-russell1000 { background: #fb8c00; }
+  .pill-ftse100     { background: #c62828; }
+  .pill-ftse250     { background: #ad4e00; }
+  .pill-russell2000 { background: #2e7d32; }
+  .pill-other       { background: #555; }
   .top-picks {
     background: #eef5ff; border-left: 4px solid #2c6cb0;
     padding: 10px 14px; margin: 8px 0 16px; border-radius: 4px;
@@ -824,7 +826,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   <tbody>
     {% for h in portfolio.holdings %}
     <tr>
-      <td class="text"><b>{{ h.ticker }}</b></td>
+      <td class="text">
+        <b>{{ h.ticker }}</b>
+        {% if h.remapped %}<div style="font-size:10px; color:#888; margin-top:2px;">(was {{ h.original_ticker }})</div>{% endif %}
+      </td>
       <td class="text">{{ h.sector or "—" }}</td>
       <td data-sort="{{ h.quantity }}">{{ h.quantity }}</td>
       <td data-sort="{{ h.avg_buy_price }}">{{ h.avg_buy_fmt }}</td>
@@ -1283,6 +1288,8 @@ def _prepare_portfolio(analysis: dict, currency: str = "") -> dict:
         comp = p.get("composite_score")
         holdings.append({
             "ticker": p["ticker"],
+            "remapped": bool(p.get("remapped")),
+            "original_ticker": p.get("original_ticker"),
             "sector": p.get("sector"),
             "quantity": p["quantity"],
             "avg_buy_price": p["avg_buy_price"],
@@ -1357,13 +1364,13 @@ def generate_report(db_path: str, output_path: str,
         idx_set = {s for s in idx_str.split(",") if s}
         for name in idx_set:
             index_counts[name] = index_counts.get(name, 0) + 1
-        if idx_set & {"SP500", "NASDAQ100"}:
+        if idx_set & {"SP500", "NASDAQ100", "RUSSELL1000"}:
             us_raw.append(r)
         if idx_set & {"FTSE100", "FTSE250"}:
             uk_raw.append(r)
 
     sections = [
-        _build_section("us-markets", "US Markets (S&P 500 + NASDAQ 100)", us_raw),
+        _build_section("us-markets", "US Markets (S&P 500 + NASDAQ 100 + Russell 1000)", us_raw),
         _build_section("uk-markets", "UK Markets (FTSE 100 + FTSE 250)", uk_raw),
     ]
 
