@@ -1,0 +1,7 @@
+yfinance
+pandas
+requests
+beautifulsoup4
+tabulate
+colorama
+jinja2

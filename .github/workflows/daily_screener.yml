@@ -1,0 +1,192 @@
+name: Daily Stock Screener
+
+on:
+  schedule:
+    # 21:30 UTC, Mon-Fri — after NYSE close (21:00 UTC) and well after LSE close (16:30 BST).
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      smoke_only:
+        description: 'Run smoke test instead of full pipeline'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  run-screener:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Date stamp
+        id: date
+        run: echo "value=$(date -u +%Y-%m-%d)" >> $GITHUB_OUTPUT
+
+      - name: Run pipeline
+        env:
+          T212_API_KEY: ${{ secrets.T212_API_KEY }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          if [ "${{ github.event.inputs.smoke_only }}" = "true" ]; then
+            python screener.py --smoke
+          else
+            python screener.py
+          fi
+
+      - name: Send email report via Resend
+        if: success()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+        run: |
+          python <<'PY'
+          import json, os, sys
+          from datetime import datetime
+          import requests
+
+          api_key = os.environ.get("RESEND_API_KEY")
+          sender = os.environ.get("REPORT_EMAIL_FROM")
+          recipient = os.environ.get("REPORT_EMAIL_TO")
+          if not (api_key and sender and recipient):
+              print("Resend secrets not configured — skipping email")
+              sys.exit(0)
+
+          with open("reports/daily_report.html", encoding="utf-8") as f:
+              html = f.read()
+
+          subject = f"StockBoard Daily Report — {datetime.utcnow():%d %b %Y}"
+          payload = {
+              "from": sender,
+              "to": [recipient],
+              "subject": subject,
+              "html": html,
+          }
+          try:
+              resp = requests.post(
+                  "https://api.resend.com/emails",
+                  headers={
+                      "Authorization": f"Bearer {api_key}",
+                      "Content-Type": "application/json",
+                  },
+                  data=json.dumps(payload),
+                  timeout=60,
+              )
+          except Exception as e:
+              print(f"Resend request failed: {e}")
+              sys.exit(0)
+
+          if resp.status_code >= 300:
+              print(f"Resend returned {resp.status_code}: {resp.text}")
+          else:
+              try:
+                  msg_id = resp.json().get("id", "(no id)")
+              except Exception:
+                  msg_id = "(unparseable response)"
+              print(f"Email sent successfully — id={msg_id}")
+          PY
+
+      - name: Commit report and DB
+        if: success()
+        run: |
+          git config user.name "StockBoard Bot"
+          git config user.email "bot@stockboard"
+          git add reports/daily_report.html screener.db
+          TICKERS=$(python -c "import sqlite3; c=sqlite3.connect('screener.db'); print(c.execute('SELECT COUNT(*) FROM daily_metrics WHERE run_date=(SELECT MAX(run_date) FROM daily_metrics)').fetchone()[0])")
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Daily run ${{ steps.date.outputs.value }} — ${TICKERS} tickers"
+            git push
+          fi
+
+      - name: Upload report artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-report-${{ steps.date.outputs.value }}
+          path: reports/daily_report.html
+          retention-days: 30
+          overwrite: true
+
+  notify-on-failure:
+    runs-on: ubuntu-latest
+    needs: run-screener
+    if: failure()
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Send failure email via Resend
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python <<'PY'
+          import json, os, sys
+          import urllib.error
+          import urllib.request
+          from datetime import datetime
+
+          api_key = os.environ.get("RESEND_API_KEY")
+          sender = os.environ.get("REPORT_EMAIL_FROM")
+          recipient = os.environ.get("REPORT_EMAIL_TO")
+          run_url = os.environ.get("RUN_URL", "")
+          if not (api_key and sender and recipient):
+              print("Resend secrets not configured — cannot send failure email")
+              sys.exit(0)
+
+          subject = f"StockBoard FAILED — {datetime.utcnow():%d %b %Y}"
+          body = (
+              "The StockBoard daily pipeline failed.\n\n"
+              f"Workflow run: {run_url}\n"
+          )
+          data = json.dumps({
+              "from": sender,
+              "to": [recipient],
+              "subject": subject,
+              "text": body,
+          }).encode("utf-8")
+          req = urllib.request.Request(
+              "https://api.resend.com/emails",
+              data=data,
+              headers={
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  print(f"Failure email status: {resp.status}")
+          except urllib.error.HTTPError as e:
+              print(f"Resend returned {e.code}: {e.read().decode('utf-8', 'replace')}")
+          except Exception as e:
+              print(f"Failure email error: {e}")
+          PY

@@ -1,0 +1,60 @@
+name: Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smoke pipeline
+        env:
+          PYTHONUNBUFFERED: '1'
+        run: python screener.py --smoke
+
+      - name: Verify HTML report
+        run: |
+          test -f reports/daily_report.html
+          SIZE=$(wc -c < reports/daily_report.html)
+          echo "Report size: $SIZE bytes"
+          if [ "$SIZE" -le 10240 ]; then
+            echo "ERROR: report is $SIZE bytes (expected > 10KB)"
+            exit 1
+          fi
+
+      - name: Verify DB rows
+        run: |
+          python -c "import sqlite3; db=sqlite3.connect('screener.db'); rows=db.execute('SELECT COUNT(*) FROM daily_metrics').fetchone()[0]; assert rows > 0, 'No rows in DB'; print(f'DB check passed: {rows} rows')"
+
+      - name: Summary
+        if: success()
+        run: echo "Smoke test PASSED"
+
+      - name: Failure summary
+        if: failure()
+        run: echo "Smoke test FAILED"
