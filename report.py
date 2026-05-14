@@ -99,12 +99,7 @@ TOP20_COLUMNS = [
     ("indices", "Index"),
     ("score_composite", "Composite"),
     ("consensus", "Consensus"),
-] + [(k, PERSONA_LABEL[k]) for k in PERSONA_KEYS] + [
-    ("rsi_14", "RSI"),
-    ("macd_weekly_rising", "MACD W"),
-    ("macd_monthly_rising", "MACD M"),
-    ("ret_1y", "1Y %"),
-]
+] + [(k, PERSONA_LABEL[k]) for k in PERSONA_KEYS]
 TOP20_TEXT_COLS = {"rank", "ticker_display", "company_name", "sector", "indices"}
 
 TEXT_COLS = {"ticker", "company_name", "sector", "analyst_rating", "golden_cross_date",
@@ -554,29 +549,82 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>Daily Screener — {{ run_date }}</title>
 <style>
+  html { scroll-behavior: smooth; }
   body { font-family: -apple-system, Helvetica, Arial, sans-serif; margin: 24px; color: #222; }
   h1 { margin-bottom: 4px; }
-  h2 { margin-top: 32px; border-bottom: 2px solid #ddd; padding-bottom: 4px; }
+  h2 { margin-top: 32px; border-bottom: 2px solid #ddd; padding-bottom: 4px; scroll-margin-top: 16px; }
   h3 { margin-top: 18px; color: #555; }
   .meta { color: #666; font-size: 0.9em; margin-bottom: 16px; }
   .subtitle { color: #555; font-size: 13px; margin-top: -2px; margin-bottom: 6px; }
   .explainer { color: #777; font-size: 12px; margin-bottom: 12px; }
   .summary { background: #f3f5f8; padding: 12px 16px; border-radius: 6px; margin-bottom: 24px; }
   .summary span { margin-right: 18px; }
-  .toolbar { margin: 8px 0; }
+  .controls {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 12px; margin: 8px 0 4px;
+  }
+  .controls .spacer { flex: 1; }
   button.csv {
     background: #2c6cb0; color: #fff; border: 0; padding: 6px 12px;
     border-radius: 4px; cursor: pointer; font-size: 0.9em;
   }
   button.csv:hover { background: #1f5390; }
-  .table-wrap { overflow-x: auto; max-width: 100%; }
+  .search-wrap { position: relative; display: inline-flex; align-items: center; }
+  .search-input {
+    width: 300px; padding: 6px 28px 6px 10px;
+    font-size: 12px; font-family: inherit;
+    border: 1px solid #ccc; border-radius: 3px;
+    background: #fff; outline: none;
+    transition: border-color 150ms ease, box-shadow 150ms ease;
+  }
+  .search-input:focus {
+    border-color: #2c6cb0;
+    box-shadow: 0 1px 4px rgba(44, 108, 176, 0.18);
+  }
+  .search-clear {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: transparent; border: 0; color: #888; font-size: 16px;
+    cursor: pointer; padding: 0 4px; line-height: 1;
+  }
+  .search-clear:hover { color: #333; }
+  .count-line { font-size: 11px; color: #777; margin: 2px 0 8px; }
+  button.collapse-toggle {
+    background: #f0f3f6; color: #444; border: 1px solid #d8dde2;
+    padding: 2px 10px; border-radius: 3px;
+    font-family: inherit; font-size: 12px; cursor: pointer;
+    margin-left: 10px; vertical-align: middle;
+  }
+  button.collapse-toggle:hover { background: #e3e8ed; color: #222; }
+  .collapsible {
+    overflow: hidden; max-height: 0; transition: max-height 300ms ease;
+  }
+  .collapsible.open { max-height: 50000px; }
+  .jump-nav {
+    position: fixed; top: 12px; right: 16px;
+    display: flex; gap: 6px; z-index: 100;
+    background: rgba(255, 255, 255, 0.96); padding: 6px;
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  }
+  .jump-nav a {
+    font-size: 11px; padding: 4px 10px; border-radius: 3px;
+    background: #2c6cb0; color: #fff; text-decoration: none;
+    font-weight: 600;
+  }
+  .jump-nav a:hover { background: #1f5390; }
+  .table-wrap { overflow: auto; max-height: 80vh; max-width: 100%; }
   table { border-collapse: collapse; width: 100%; font-size: 12px; }
   th, td { padding: 4px 8px; border: 1px solid #e2e2e2; text-align: right; white-space: nowrap; }
-  th { background: #fafafa; cursor: pointer; user-select: none; position: sticky; top: 0; }
+  th {
+    background: #fff; cursor: pointer; user-select: none;
+    position: sticky; top: 0; z-index: 2;
+    border-bottom: 2px solid #c5c8cc;
+  }
   th.text, td.text { text-align: left; }
-  th:hover { background: #ececec; }
+  th:hover { background: #f3f5f8; }
   th.sort-asc::after  { content: " \\25B2"; font-size: 0.7em; }
   th.sort-desc::after { content: " \\25BC"; font-size: 0.7em; }
+  tr.no-results td { text-align: center; color: #888; padding: 14px; font-style: italic; }
   tr.row-green  { background: #e6f7ea; }
   tr.row-amber  { background: #fff5d6; }
   tr.row-red    { background: #fde4e4; }
@@ -640,6 +688,15 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </style>
 </head>
 <body>
+<div id="top"></div>
+
+<nav class="jump-nav">
+  <a href="#top20">Top 20</a>
+  <a href="#us-markets">US Markets</a>
+  <a href="#uk-markets">UK Markets</a>
+  <a href="#top">↑ Top</a>
+</nav>
+
 <h1>Daily Stock Screener</h1>
 <div class="meta">Run date: {{ run_date }} · Generated {{ generated_at }}</div>
 
@@ -652,15 +709,23 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 {% if top20_rows %}
+<section id="top20">
 <h2>Today's Top 20 Board Picks</h2>
 <div class="subtitle">Run date: {{ run_date }}</div>
 <div class="explainer">
   Ranked by Composite Panel Score across 12 investor personas. Showing
   highest-conviction candidates from the full {{ total_processed }}-ticker universe.
 </div>
-<div class="toolbar">
+<div class="controls">
+  <div class="search-wrap">
+    <input type="text" class="search-input" data-search-for="tbl-top20"
+           placeholder="Search ticker, company or sector..." />
+    <button class="search-clear" data-clears-for="tbl-top20" style="display:none">×</button>
+  </div>
+  <div class="spacer"></div>
   <button class="csv" data-table="tbl-top20" data-filename="top20.csv">Export Top 20 CSV</button>
 </div>
+<div class="count-line" data-count-for="tbl-top20"></div>
 <div class="table-wrap">
 <table id="tbl-top20">
   <thead>
@@ -730,9 +795,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   {% endif %}
 </div>
 {% endif %}
+</section>
 {% endif %}
 
 {% for section in sections %}
+<section id="{{ section.id }}">
 <h2>{{ section.title }} <small style="color:#888;font-weight:normal;">({{ section.rows|length }})</small></h2>
 
 {% if section.top_picks %}
@@ -744,12 +811,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 {% endif %}
 
-<h3>Metrics</h3>
-<div class="toolbar">
+<h3>Metrics
+  <button class="collapse-toggle" data-toggles="collapse-tbl-{{ section.id }}">▶ Show</button>
+</h3>
+<div class="collapsible" id="collapse-tbl-{{ section.id }}">
+<div class="controls">
+  <div class="search-wrap">
+    <input type="text" class="search-input" data-search-for="tbl-{{ section.id }}"
+           placeholder="Search ticker, company or sector..." />
+    <button class="search-clear" data-clears-for="tbl-{{ section.id }}" style="display:none">×</button>
+  </div>
+  <div class="spacer"></div>
   <button class="csv" data-table="tbl-{{ section.id }}" data-filename="{{ section.id }}.csv">
     Export CSV
   </button>
 </div>
+<div class="count-line" data-count-for="tbl-{{ section.id }}"></div>
 <div class="table-wrap">
 <table id="tbl-{{ section.id }}">
   <thead>
@@ -779,12 +856,25 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </table>
 </div>
 
-<h3>Board Scores</h3>
-<div class="toolbar">
+</div>
+</div>
+
+<h3>Board Scores
+  <button class="collapse-toggle" data-toggles="collapse-tbl-{{ section.id }}-board">▶ Show</button>
+</h3>
+<div class="collapsible" id="collapse-tbl-{{ section.id }}-board">
+<div class="controls">
+  <div class="search-wrap">
+    <input type="text" class="search-input" data-search-for="tbl-{{ section.id }}-board"
+           placeholder="Search ticker, company or sector..." />
+    <button class="search-clear" data-clears-for="tbl-{{ section.id }}-board" style="display:none">×</button>
+  </div>
+  <div class="spacer"></div>
   <button class="csv" data-table="tbl-{{ section.id }}-board" data-filename="{{ section.id }}-board.csv">
     Export CSV
   </button>
 </div>
+<div class="count-line" data-count-for="tbl-{{ section.id }}-board"></div>
 <div class="table-wrap">
 <table id="tbl-{{ section.id }}-board">
   <thead>
@@ -813,6 +903,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   </tbody>
 </table>
 </div>
+</div>
+</section>
 {% endfor %}
 
 <script>
@@ -842,11 +934,14 @@ document.querySelectorAll('table').forEach(function(table) {
   });
 });
 
-// CSV export
+// CSV export — only export visible (filtered) rows
 document.querySelectorAll('button.csv').forEach(function(btn) {
   btn.addEventListener('click', function() {
     const table = document.getElementById(btn.dataset.table);
-    const rows = Array.from(table.querySelectorAll('tr'));
+    const allRows = Array.from(table.querySelectorAll('tr'));
+    const rows = allRows.filter(function(r) {
+      return r.style.display !== 'none' && !r.classList.contains('no-results');
+    });
     const csv = rows.map(function(r) {
       const cells = Array.from(r.querySelectorAll('th, td'));
       return cells.map(function(c) {
@@ -860,6 +955,98 @@ document.querySelectorAll('button.csv').forEach(function(btn) {
     a.href = url; a.download = btn.dataset.filename;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
+  });
+});
+
+// Filter / search
+function dataRowsOf(tbody) {
+  return Array.from(tbody.querySelectorAll('tr')).filter(function(r) {
+    return !r.classList.contains('no-results');
+  });
+}
+
+function filterTable(tableId) {
+  const input = document.querySelector('[data-search-for="' + tableId + '"]');
+  const table = document.getElementById(tableId);
+  if (!input || !table) return;
+  const tbody = table.querySelector('tbody');
+  if (!tbody) return;
+
+  // Remove any prior no-results row before counting
+  tbody.querySelectorAll('tr.no-results').forEach(function(r) { r.remove(); });
+  const rows = dataRowsOf(tbody);
+
+  const q = (input.value || '').trim().toLowerCase();
+  let shown = 0;
+  rows.forEach(function(r) {
+    const matches = q === '' || r.textContent.toLowerCase().indexOf(q) !== -1;
+    r.style.display = matches ? '' : 'none';
+    if (matches) shown++;
+  });
+
+  if (shown === 0 && q !== '') {
+    const cols = table.querySelectorAll('thead th').length;
+    const tr = document.createElement('tr');
+    tr.className = 'no-results';
+    const td = document.createElement('td');
+    td.colSpan = cols;
+    td.textContent = 'No results for "' + input.value + '"';
+    tr.appendChild(td);
+    tbody.appendChild(tr);
+  }
+
+  const counter = document.querySelector('[data-count-for="' + tableId + '"]');
+  if (counter) counter.textContent = 'Showing ' + shown + ' of ' + rows.length + ' tickers';
+
+  const clear = document.querySelector('[data-clears-for="' + tableId + '"]');
+  if (clear) clear.style.display = q ? 'inline-block' : 'none';
+}
+
+document.querySelectorAll('input.search-input').forEach(function(input) {
+  const tableId = input.dataset.searchFor;
+  input.addEventListener('input', function() { filterTable(tableId); });
+  filterTable(tableId); // initialise count
+});
+
+document.querySelectorAll('button.search-clear').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    const tableId = btn.dataset.clearsFor;
+    const input = document.querySelector('[data-search-for="' + tableId + '"]');
+    if (input) {
+      input.value = '';
+      filterTable(tableId);
+      input.focus();
+    }
+  });
+});
+
+// Collapse / expand with sessionStorage persistence
+function setCollapseUI(content, btn, isOpen) {
+  if (isOpen) {
+    content.classList.add('open');
+    if (btn) btn.innerHTML = '▼ Hide';
+  } else {
+    content.classList.remove('open');
+    if (btn) btn.innerHTML = '▶ Show';
+  }
+}
+
+document.querySelectorAll('.collapsible').forEach(function(content) {
+  const id = content.id;
+  const btn = document.querySelector('[data-toggles="' + id + '"]');
+  const stored = sessionStorage.getItem('collapse-state-' + id);
+  const isOpen = stored === 'open'; // default closed
+  setCollapseUI(content, btn, isOpen);
+});
+
+document.querySelectorAll('button.collapse-toggle').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    const id = btn.dataset.toggles;
+    const content = document.getElementById(id);
+    if (!content) return;
+    const willOpen = !content.classList.contains('open');
+    setCollapseUI(content, btn, willOpen);
+    sessionStorage.setItem('collapse-state-' + id, willOpen ? 'open' : 'closed');
   });
 });
 </script>
