@@ -69,8 +69,9 @@ jobs:
 
           api_key = os.environ.get("RESEND_API_KEY")
           sender = os.environ.get("REPORT_EMAIL_FROM")
-          recipient = os.environ.get("REPORT_EMAIL_TO")
-          if not (api_key and sender and recipient):
+          recipient_raw = os.environ.get("REPORT_EMAIL_TO") or ""
+          recipients = [a.strip() for a in recipient_raw.split(",") if a.strip()]
+          if not (api_key and sender and recipients):
               print("Resend secrets not configured — skipping email")
               sys.exit(0)
 
@@ -80,10 +81,11 @@ jobs:
           subject = f"StockBoard Daily Report — {datetime.utcnow():%d %b %Y}"
           payload = {
               "from": sender,
-              "to": [recipient],
+              "to": recipients,
               "subject": subject,
               "html": html,
           }
+          print(f"Sending to {len(recipients)} recipient(s)")
           try:
               resp = requests.post(
                   "https://api.resend.com/emails",
