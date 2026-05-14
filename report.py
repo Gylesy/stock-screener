@@ -685,12 +685,55 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   }
   .leader-card .leader-value { font-size: 18px; font-weight: 700; color: #1f5390; }
   .leader-card .leader-detail { font-size: 11px; color: #777; margin-top: 4px; }
+  /* Portfolio Dashboard */
+  .portfolio-summary {
+    display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0 22px;
+    align-items: stretch;
+  }
+  .health-card {
+    background: #f3f5f8; padding: 14px 20px; border-radius: 6px;
+    border-left: 4px solid #2c6cb0; min-width: 200px;
+  }
+  .health-card .label {
+    font-size: 11px; color: #666; text-transform: uppercase;
+    letter-spacing: 0.5px; margin-bottom: 4px;
+  }
+  .health-card .score { font-size: 32px; font-weight: 700; line-height: 1; }
+  .health-card .score.green { color: #2e7d32; }
+  .health-card .score.amber { color: #b27000; }
+  .health-card .score.red   { color: #b71c1c; }
+  .health-card .components { font-size: 10px; color: #888; margin-top: 6px; }
+  .stat-card {
+    background: #fafafa; padding: 10px 14px; border-radius: 6px;
+    border: 1px solid #e5e7eb; min-width: 130px;
+  }
+  .stat-card .label {
+    font-size: 10px; color: #666; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .stat-card .val { font-size: 18px; font-weight: 700; color: #222; margin-top: 2px; }
+  .stat-card .val.pos { color: #2e7d32; }
+  .stat-card .val.neg { color: #c62828; }
+  td.signal-buy   { background: #c8e6c9; color: #1b5e20; font-weight: 700; }
+  td.signal-hold  { background: #f0f3f6; color: #444; }
+  td.signal-trim  { background: #fff0b3; color: #6b4d00; font-weight: 600; }
+  td.signal-sell  { background: #ffcdd2; color: #b71c1c; font-weight: 700; }
+  td.pnl-pos { background: #d8f0db; color: #1b5e20; }
+  td.pnl-neg { background: #fde0e0; color: #b71c1c; }
+  .action-chip {
+    display: inline-block; padding: 2px 8px; border-radius: 3px;
+    font-size: 11px; font-weight: 700;
+  }
+  .action-chip.BUY  { background: #2e7d32; color: #fff; }
+  .action-chip.TRIM { background: #f9a825; color: #fff; }
+  .action-chip.SELL { background: #c62828; color: #fff; }
 </style>
 </head>
 <body>
 <div id="top"></div>
 
 <nav class="jump-nav">
+  {% if portfolio %}<a href="#portfolio">Portfolio</a>{% endif %}
   <a href="#top20">Top 20</a>
   <a href="#us-markets">US Markets</a>
   <a href="#uk-markets">UK Markets</a>
@@ -707,6 +750,144 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <span>{{ name }}: <b>{{ n }}</b></span>
   {% endfor %}
 </div>
+
+{% if portfolio %}
+<section id="portfolio">
+<h2>Portfolio Dashboard</h2>
+<div class="explainer">
+  {{ portfolio.n_positions }} positions · {{ portfolio.n_winners }} winners · {{ portfolio.n_losers }} losers.
+  Signals derived from Board composite score and current unrealised P&amp;L.
+</div>
+
+<div class="portfolio-summary">
+  <div class="health-card">
+    <div class="label">Portfolio Health Score</div>
+    <div class="score {{ portfolio.health_class }}">{{ portfolio.health_score }}</div>
+    <div class="components">
+      Composite {{ portfolio.health_components.avg_composite }} ·
+      Concentration {{ portfolio.health_components.concentration }} ·
+      Diversity {{ portfolio.health_components.sector_diversity }} ·
+      Winners {{ portfolio.health_components.winner_ratio }} ·
+      Return {{ portfolio.health_components.overall_return }}
+    </div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Total Value</div>
+    <div class="val">{{ portfolio.total_value_fmt }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Cost Basis</div>
+    <div class="val">{{ portfolio.total_cost_fmt }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Unrealised P&amp;L</div>
+    <div class="val {{ portfolio.pnl_class }}">{{ portfolio.total_pnl_fmt }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">P&amp;L %</div>
+    <div class="val {{ portfolio.pnl_class }}">{{ portfolio.total_pnl_pct_fmt }}</div>
+  </div>
+  <div class="stat-card">
+    <div class="label">Positions</div>
+    <div class="val">{{ portfolio.n_positions }}</div>
+  </div>
+</div>
+
+<h3>Holdings</h3>
+<div class="controls">
+  <div class="search-wrap">
+    <input type="text" class="search-input" data-search-for="tbl-portfolio"
+           placeholder="Search ticker..." />
+    <button class="search-clear" data-clears-for="tbl-portfolio" style="display:none">×</button>
+  </div>
+  <div class="spacer"></div>
+  <button class="csv" data-table="tbl-portfolio" data-filename="portfolio.csv">Export CSV</button>
+</div>
+<div class="count-line" data-count-for="tbl-portfolio"></div>
+<div class="table-wrap">
+<table id="tbl-portfolio">
+  <thead>
+    <tr>
+      <th class="text">Ticker</th>
+      <th class="text">Sector</th>
+      <th>Qty</th>
+      <th>Avg Buy</th>
+      <th>Current</th>
+      <th>Value</th>
+      <th>P&amp;L</th>
+      <th>P&amp;L %</th>
+      <th>Composite</th>
+      <th class="text">Signal</th>
+      <th class="text">Reason</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for h in portfolio.holdings %}
+    <tr>
+      <td class="text"><b>{{ h.ticker }}</b></td>
+      <td class="text">{{ h.sector or "—" }}</td>
+      <td data-sort="{{ h.quantity }}">{{ h.quantity }}</td>
+      <td data-sort="{{ h.avg_buy_price }}">{{ h.avg_buy_fmt }}</td>
+      <td data-sort="{{ h.current_price }}">{{ h.current_fmt }}</td>
+      <td data-sort="{{ h.current_value }}">{{ h.value_fmt }}</td>
+      <td class="{{ h.pnl_class }}" data-sort="{{ h.unrealised_pnl }}">{{ h.pnl_fmt }}</td>
+      <td class="{{ h.pnl_class }}" data-sort="{{ h.unrealised_pnl_pct }}">{{ h.pnl_pct_fmt }}</td>
+      <td class="{{ h.composite_class }}" data-sort="{{ h.composite_score if h.composite_score is not none else '' }}">
+        {{ h.composite_fmt }}
+      </td>
+      <td class="text signal-{{ h.signal_key }}">{{ h.signal }}</td>
+      <td class="text" style="white-space:normal; max-width:280px;">{{ h.signal_reason }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+
+{% if portfolio.suggestions %}
+<h3>Trade Suggestions</h3>
+<div class="controls">
+  <div class="search-wrap">
+    <input type="text" class="search-input" data-search-for="tbl-suggestions"
+           placeholder="Search ticker..." />
+    <button class="search-clear" data-clears-for="tbl-suggestions" style="display:none">×</button>
+  </div>
+  <div class="spacer"></div>
+  <button class="csv" data-table="tbl-suggestions" data-filename="trade_suggestions.csv">Export CSV</button>
+</div>
+<div class="count-line" data-count-for="tbl-suggestions"></div>
+<div class="table-wrap">
+<table id="tbl-suggestions">
+  <thead>
+    <tr>
+      <th class="text">Action</th>
+      <th class="text">Ticker</th>
+      <th>Current Qty</th>
+      <th>Suggested Qty</th>
+      <th>P&amp;L %</th>
+      <th>Composite</th>
+      <th class="text">Rationale</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in portfolio.suggestions %}
+    <tr>
+      <td class="text"><span class="action-chip {{ s.action }}">{{ s.action }}</span></td>
+      <td class="text"><b>{{ s.ticker }}</b></td>
+      <td data-sort="{{ s.current_quantity }}">{{ s.current_quantity }}</td>
+      <td data-sort="{{ s.suggested_quantity }}">{{ s.suggested_quantity }}</td>
+      <td class="{{ s.pnl_class }}" data-sort="{{ s.current_pnl_pct }}">{{ s.pnl_pct_fmt }}</td>
+      <td class="{{ s.composite_class }}" data-sort="{{ s.composite_score if s.composite_score is not none else '' }}">
+        {{ s.composite_fmt }}
+      </td>
+      <td class="text" style="white-space:normal; max-width:340px;">{{ s.rationale }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+</section>
+{% endif %}
 
 {% if top20_rows %}
 <section id="top20">
@@ -1059,7 +1240,105 @@ document.querySelectorAll('button.collapse-toggle').forEach(function(btn) {
 # Entry point
 
 
-def generate_report(db_path: str, output_path: str, run_date: Optional[str] = None) -> str:
+def _money(v: float, currency: str = "") -> str:
+    sign = "-" if v < 0 else ""
+    a = abs(v)
+    if a >= 1_000_000:
+        return f"{sign}{currency}{a / 1_000_000:.2f}M"
+    if a >= 1_000:
+        return f"{sign}{currency}{a / 1_000:.1f}K"
+    return f"{sign}{currency}{a:.0f}"
+
+
+def _signal_key(label: str) -> str:
+    s = label.lower()
+    if "buy" in s:
+        return "buy"
+    if "trim" in s:
+        return "trim"
+    if "sell" in s:
+        return "sell"
+    return "hold"
+
+
+def _health_class(score: float) -> str:
+    if score >= 75:
+        return "green"
+    if score >= 50:
+        return "amber"
+    return "red"
+
+
+def _pnl_class(v: float) -> str:
+    if v > 0:
+        return "pnl-pos"
+    if v < 0:
+        return "pnl-neg"
+    return ""
+
+
+def _prepare_portfolio(analysis: dict, currency: str = "") -> dict:
+    holdings = []
+    for p in analysis["positions"]:
+        comp = p.get("composite_score")
+        holdings.append({
+            "ticker": p["ticker"],
+            "sector": p.get("sector"),
+            "quantity": p["quantity"],
+            "avg_buy_price": p["avg_buy_price"],
+            "current_price": p["current_price"],
+            "current_value": p["current_value"],
+            "unrealised_pnl": p["unrealised_pnl"],
+            "unrealised_pnl_pct": p["unrealised_pnl_pct"],
+            "composite_score": comp,
+            "signal": p["signal"],
+            "signal_key": _signal_key(p["signal"]),
+            "signal_reason": p["signal_reason"],
+            "avg_buy_fmt": f"{p['avg_buy_price']:.2f}",
+            "current_fmt": f"{p['current_price']:.2f}",
+            "value_fmt": _money(p["current_value"], currency),
+            "pnl_fmt": _money(p["unrealised_pnl"], currency),
+            "pnl_pct_fmt": f"{p['unrealised_pnl_pct']:+.1f}%",
+            "pnl_class": _pnl_class(p["unrealised_pnl"]),
+            "composite_fmt": f"{comp:.1f}" if comp is not None else "N/A",
+            "composite_class": _composite_class(comp) if comp is not None else "",
+        })
+    suggestions = []
+    for s in analysis.get("suggestions", []):
+        comp = s.get("composite_score")
+        suggestions.append({
+            **s,
+            "pnl_pct_fmt": f"{s['current_pnl_pct']:+.1f}%",
+            "pnl_class": _pnl_class(s["current_pnl_pct"]),
+            "composite_fmt": f"{comp:.1f}" if comp is not None else "N/A",
+            "composite_class": _composite_class(comp) if comp is not None else "",
+        })
+
+    return {
+        "holdings": holdings,
+        "suggestions": suggestions,
+        "n_positions": analysis["n_positions"],
+        "n_winners": analysis["n_winners"],
+        "n_losers": analysis["n_losers"],
+        "total_value": analysis["total_value"],
+        "total_cost": analysis["total_cost"],
+        "total_pnl": analysis["total_pnl"],
+        "total_pnl_pct": analysis["total_pnl_pct"],
+        "total_value_fmt": _money(analysis["total_value"], currency),
+        "total_cost_fmt": _money(analysis["total_cost"], currency),
+        "total_pnl_fmt": _money(analysis["total_pnl"], currency),
+        "total_pnl_pct_fmt": f"{analysis['total_pnl_pct']:+.1f}%",
+        "pnl_class": _pnl_class(analysis["total_pnl"]).replace("pnl-pos", "pos").replace("pnl-neg", "neg"),
+        "health_score": analysis["health_score"],
+        "health_class": _health_class(analysis["health_score"]),
+        "health_components": analysis["health_components"],
+    }
+
+
+def generate_report(db_path: str, output_path: str,
+                    run_date: Optional[str] = None,
+                    portfolio: Optional[dict] = None,
+                    portfolio_currency: str = "") -> str:
     rows, indices = _load_latest(db_path, run_date)
 
     us_raw: List[dict] = []
@@ -1087,6 +1366,8 @@ def generate_report(db_path: str, output_path: str, run_date: Optional[str] = No
 
     leaders = _consensus_leaders(rows)
 
+    portfolio_ctx = _prepare_portfolio(portfolio, portfolio_currency) if portfolio else None
+
     template = Template(HTML_TEMPLATE)
     html = template.render(
         columns=COLUMNS,
@@ -1100,6 +1381,7 @@ def generate_report(db_path: str, output_path: str, run_date: Optional[str] = No
         max_sector_count=max_sector_count,
         leaders=leaders,
         sections=sections,
+        portfolio=portfolio_ctx,
         run_date=run_date or "(latest)",
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         total_processed=len(rows),
