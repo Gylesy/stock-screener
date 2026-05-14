@@ -18,7 +18,8 @@ import report
 
 
 DB_PATH = "screener.db"
-REPORT_PATH = "reports/daily_report.html"
+PUBLIC_REPORT_PATH = "reports/daily_report.html"
+PRIVATE_REPORT_PATH = "reports/portfolio_report.html"
 
 POSITIONS_INPUT = [
     {"ticker": "AAPL",  "quantity": 50,  "avg_buy_price": 165.00},
@@ -139,12 +140,42 @@ def main() -> None:
     _print_suggestions(suggestions)
     print()
 
+    import os
+
+    # 1. Public daily_report.html — NO Portfolio Dashboard
     report.generate_report(
         db_path=DB_PATH,
-        output_path=REPORT_PATH,
-        portfolio=analysis,
+        output_path=PUBLIC_REPORT_PATH,
+        include_portfolio=False,
     )
-    print(f"Portfolio dashboard generated — open {REPORT_PATH} to view")
+    # 2. Private portfolio_report.html — INCLUDES Portfolio Dashboard
+    report.generate_report(
+        db_path=DB_PATH,
+        output_path=PRIVATE_REPORT_PATH,
+        include_portfolio=True,
+        portfolio_data=analysis,
+    )
+
+    # Match the real section, not the CSS comment "/* Portfolio Dashboard */"
+    public_size = os.path.getsize(PUBLIC_REPORT_PATH)
+    private_size = os.path.getsize(PRIVATE_REPORT_PATH)
+    marker = '<section id="portfolio">'
+    with open(PUBLIC_REPORT_PATH) as f:
+        public_has_portfolio = marker in f.read()
+    with open(PRIVATE_REPORT_PATH) as f:
+        private_has_portfolio = marker in f.read()
+
+    print()
+    print(f"{PUBLIC_REPORT_PATH:<36}  {public_size:>10,} bytes  "
+          f"portfolio={'YES (BUG!)' if public_has_portfolio else 'no'}")
+    print(f"{PRIVATE_REPORT_PATH:<36}  {private_size:>10,} bytes  "
+          f"portfolio={'yes' if private_has_portfolio else 'NO (BUG!)'}")
+
+    assert not public_has_portfolio, "daily_report.html should NOT contain Portfolio Dashboard"
+    assert private_has_portfolio, "portfolio_report.html SHOULD contain Portfolio Dashboard"
+
+    print()
+    print("Two-report split working correctly")
 
 
 if __name__ == "__main__":

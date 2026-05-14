@@ -1336,9 +1336,16 @@ def _prepare_portfolio(analysis: dict, currency: str = "") -> dict:
 
 
 def generate_report(db_path: str, output_path: str,
+                    include_portfolio: bool = False,
+                    portfolio_data: Optional[dict] = None,
                     run_date: Optional[str] = None,
-                    portfolio: Optional[dict] = None,
                     portfolio_currency: str = "") -> str:
+    """Render an HTML report.
+
+    The Portfolio Dashboard section is only included when
+    `include_portfolio=True` AND `portfolio_data` is provided. Pass
+    `include_portfolio=False` (the default) to produce the public report.
+    """
     rows, indices = _load_latest(db_path, run_date)
 
     us_raw: List[dict] = []
@@ -1366,7 +1373,11 @@ def generate_report(db_path: str, output_path: str,
 
     leaders = _consensus_leaders(rows)
 
-    portfolio_ctx = _prepare_portfolio(portfolio, portfolio_currency) if portfolio else None
+    portfolio_ctx = (
+        _prepare_portfolio(portfolio_data, portfolio_currency)
+        if (include_portfolio and portfolio_data)
+        else None
+    )
 
     template = Template(HTML_TEMPLATE)
     html = template.render(
@@ -1391,6 +1402,173 @@ def generate_report(db_path: str, output_path: str,
     with open(output_path, "w") as f:
         f.write(html)
     return output_path
+
+
+def _top_n_for_email(db_path: str, n: int = 10,
+                     run_date: Optional[str] = None) -> List[dict]:
+    rows, indices = _load_latest(db_path, run_date)
+    sortable = [r for r in rows if r.get("score_composite") is not None]
+    sortable.sort(key=lambda r: float(r["score_composite"]), reverse=True)
+    return [
+        {
+            "rank": i,
+            "ticker": r["ticker"],
+            "is_uk": r["ticker"].upper().endswith(".L"),
+            "company_name": r.get("company_name") or "",
+            "sector": r.get("sector") or "",
+            "indices": indices.get(r["ticker"], ""),
+            "score_composite": float(r["score_composite"]),
+            "top3": _top3_endorsers(r),
+        }
+        for i, r in enumerate(sortable[:n], start=1)
+    ]
+
+
+def _summary_portfolio_block(portfolio_data: dict) -> dict:
+    """Compact portfolio summary for the email — Health Score + signal counts + top 3 by value."""
+    positions = sorted(
+        portfolio_data["positions"],
+        key=lambda p: p["current_value"],
+        reverse=True,
+    )
+    signals = {"Buy More": 0, "Hold": 0, "Trim": 0, "Sell": 0}
+    for p in positions:
+        signals[p["signal"]] = signals.get(p["signal"], 0) + 1
+    return {
+        "health_score": portfolio_data["health_score"],
+        "health_class": _health_class(portfolio_data["health_score"]),
+        "n_positions": portfolio_data["n_positions"],
+        "n_winners": portfolio_data["n_winners"],
+        "signals": signals,
+        "top3": positions[:3],
+    }
+
+
+SUMMARY_EMAIL_TEMPLATE = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, Helvetica, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 24px; color: #222;">
+<h1 style="margin:0 0 4px;">StockBoard {{ heading_suffix }}</h1>
+<div style="color:#666; font-size:13px; margin-bottom: 18px;">Run date: {{ run_date }}</div>
+
+{% if portfolio %}
+<div style="background:#f3f5f8; border-left:4px solid #2c6cb0; padding:14px 18px; border-radius:6px; margin-bottom:20px;">
+  <div style="font-size:11px; text-transform:uppercase; color:#666; letter-spacing:0.5px; margin-bottom:4px;">Portfolio Health Score</div>
+  <div style="font-size:32px; font-weight:700; color:{{ portfolio_color }}; line-height:1;">{{ portfolio.health_score }}</div>
+  <div style="font-size:12px; color:#444; margin-top:8px;">
+    Positions: <b>{{ portfolio.n_positions }}</b> ·
+    Winners: <b>{{ portfolio.n_winners }}</b> ·
+    Signals: BUY <b>{{ portfolio.signals['Buy More'] }}</b>
+    · TRIM <b>{{ portfolio.signals['Trim'] }}</b>
+    · SELL <b>{{ portfolio.signals['Sell'] }}</b>
+    · HOLD <b>{{ portfolio.signals['Hold'] }}</b>
+  </div>
+  <div style="margin-top:10px;">
+    <div style="font-size:11px; text-transform:uppercase; color:#666; letter-spacing:0.5px; margin-bottom:4px;">Top 3 Holdings by Value</div>
+    <table style="border-collapse:collapse; font-size:12px; width:100%;">
+      <thead>
+        <tr style="background:#fff;">
+          <th style="text-align:left; padding:4px 8px; border-bottom:1px solid #ddd;">Ticker</th>
+          <th style="text-align:right; padding:4px 8px; border-bottom:1px solid #ddd;">Value</th>
+          <th style="text-align:right; padding:4px 8px; border-bottom:1px solid #ddd;">P&amp;L %</th>
+          <th style="text-align:left;  padding:4px 8px; border-bottom:1px solid #ddd;">Signal</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for p in portfolio.top3 %}
+        <tr>
+          <td style="padding:4px 8px;"><b>{{ p.ticker }}</b></td>
+          <td style="padding:4px 8px; text-align:right;">{{ p.current_value|round|int }}</td>
+          <td style="padding:4px 8px; text-align:right; color:{{ '#1b5e20' if p.unrealised_pnl_pct > 0 else '#b71c1c' }};">
+            {{ '%+.1f'|format(p.unrealised_pnl_pct) }}%
+          </td>
+          <td style="padding:4px 8px;">{{ p.signal }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<h2 style="margin:0 0 6px; font-size:16px;">Today's Top 10 Board Picks</h2>
+<table style="border-collapse:collapse; font-size:12px; width:100%;">
+  <thead>
+    <tr style="background:#fff;">
+      <th style="text-align:right; padding:4px 8px; border-bottom:2px solid #ccc; width:32px;">#</th>
+      <th style="text-align:left;  padding:4px 8px; border-bottom:2px solid #ccc;">Ticker</th>
+      <th style="text-align:left;  padding:4px 8px; border-bottom:2px solid #ccc;">Company</th>
+      <th style="text-align:left;  padding:4px 8px; border-bottom:2px solid #ccc;">Sector</th>
+      <th style="text-align:right; padding:4px 8px; border-bottom:2px solid #ccc;">Composite</th>
+      <th style="text-align:left;  padding:4px 8px; border-bottom:2px solid #ccc;">Top 3 Endorsers</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in top_n %}
+    <tr style="background: {{ '#fffbea' if r.rank <= 3 else ('#fafafa' if loop.index0 % 2 == 0 else '#fff') }};">
+      <td style="padding:4px 8px; text-align:right;">{{ r.rank }}</td>
+      <td style="padding:4px 8px;"><b>{{ r.ticker }}</b>{% if r.is_uk %} 🇬🇧{% endif %}</td>
+      <td style="padding:4px 8px;">{{ r.company_name[:30] }}</td>
+      <td style="padding:4px 8px;">{{ r.sector }}</td>
+      <td style="padding:4px 8px; text-align:right;"><b>{{ '%.1f'|format(r.score_composite) }}</b></td>
+      <td style="padding:4px 8px;">{{ r.top3 }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div style="margin: 20px 0 8px; text-align:center;">
+  {% if full_report_url %}
+  <a href="{{ full_report_url }}"
+     style="display:inline-block; padding:10px 22px; background:#2c6cb0; color:#fff;
+            font-weight:600; text-decoration:none; border-radius:4px; font-size:13px;">
+    View Full Report →
+  </a>
+  {% endif %}
+  {% if attachment_note %}
+  <div style="font-size:12px; color:#777; margin-top:10px;">{{ attachment_note }}</div>
+  {% endif %}
+</div>
+
+<div style="color:#aaa; font-size:11px; margin-top:18px; text-align:center;">
+  Generated by StockBoard · {{ generated_at }}
+</div>
+</body>
+</html>
+"""
+
+
+def generate_summary_email_html(
+    db_path: str,
+    full_report_url: Optional[str] = None,
+    portfolio_data: Optional[dict] = None,
+    heading_suffix: str = "Daily Report",
+    attachment_note: Optional[str] = None,
+    run_date: Optional[str] = None,
+    top_n: int = 10,
+) -> str:
+    """Build a compact email-body HTML summary (Top N + optional Portfolio block)."""
+    rows, _ = _load_latest(db_path, run_date)
+    if run_date is None:
+        run_date = max((r["run_date"] for r in rows), default="(latest)")
+    top = _top_n_for_email(db_path, n=top_n, run_date=run_date)
+
+    portfolio_summary = _summary_portfolio_block(portfolio_data) if portfolio_data else None
+    portfolio_color = "#222"
+    if portfolio_summary:
+        cls = portfolio_summary["health_class"]
+        portfolio_color = {"green": "#2e7d32", "amber": "#b27000", "red": "#b71c1c"}.get(cls, "#222")
+
+    tpl = Template(SUMMARY_EMAIL_TEMPLATE)
+    return tpl.render(
+        heading_suffix=heading_suffix,
+        run_date=run_date,
+        portfolio=portfolio_summary,
+        portfolio_color=portfolio_color,
+        top_n=top,
+        full_report_url=full_report_url,
+        attachment_note=attachment_note,
+        generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
 
 
 if __name__ == "__main__":

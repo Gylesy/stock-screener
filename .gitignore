@@ -11,6 +11,9 @@ venv/
 screener.log
 failed_tickers.log
 
+# Private portfolio report — never committed
+reports/portfolio_report.html
+
 # IDE
 .vscode/
 .idea/

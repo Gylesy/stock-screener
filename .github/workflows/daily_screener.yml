@@ -18,6 +18,9 @@ jobs:
   run-screener:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      T212_API_KEY: ${{ secrets.T212_API_KEY }}
+      PUBLIC_REPORT_URL: https://gylesy.github.io/stock-screener/reports/daily_report.html
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +49,6 @@ jobs:
 
       - name: Run pipeline
         env:
-          T212_API_KEY: ${{ secrets.T212_API_KEY }}
           PYTHONUNBUFFERED: '1'
         run: |
           if [ "${{ github.event.inputs.smoke_only }}" = "true" ]; then
@@ -55,37 +57,83 @@ jobs:
             python screener.py
           fi
 
-      - name: Send email report via Resend
-        if: success()
+      # ---- Portfolio report (private) ----
+      # Only runs if T212_API_KEY is configured. When the T212 portfolio fetcher
+      # is implemented, replace the placeholder with the actual fetch + render
+      # call that produces reports/portfolio_report.html.
+      - name: Generate portfolio report
+        if: env.T212_API_KEY != ''
+        run: |
+          echo "T212 portfolio integration not yet implemented."
+          echo "When fetching lands, this step will call something like:"
+          echo "  python -c \"import portfolio, report, t212_fetcher; "
+          echo "             positions = t212_fetcher.fetch_positions();"
+          echo "             analysis = portfolio.analyse_portfolio(positions);"
+          echo "             analysis['suggestions'] = portfolio.generate_trade_suggestions(analysis);"
+          echo "             report.generate_report('screener.db', 'reports/portfolio_report.html',"
+          echo "                                    include_portfolio=True, portfolio_data=analysis)\""
+          echo "Skipping portfolio_report.html for now."
+
+      # ---- Email 1: Portfolio summary (private, first recipient only) ----
+      - name: Send portfolio summary email
+        if: success() && hashFiles('reports/portfolio_report.html') != ''
         env:
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
           REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+          RUN_DATE: ${{ steps.date.outputs.value }}
         run: |
           python <<'PY'
-          import json, os, sys
+          import base64, json, os, sys
           from datetime import datetime
           import requests
+
+          import report as report_mod
 
           api_key = os.environ.get("RESEND_API_KEY")
           sender = os.environ.get("REPORT_EMAIL_FROM")
           recipient_raw = os.environ.get("REPORT_EMAIL_TO") or ""
           recipients = [a.strip() for a in recipient_raw.split(",") if a.strip()]
           if not (api_key and sender and recipients):
-              print("Resend secrets not configured — skipping email")
+              print("Resend secrets not configured — skipping portfolio email")
               sys.exit(0)
 
-          with open("reports/daily_report.html", encoding="utf-8") as f:
-              html = f.read()
+          owner = recipients[0]
+          subject = f"StockBoard Portfolio Report — {datetime.utcnow():%d %b %Y}"
 
-          subject = f"StockBoard Daily Report — {datetime.utcnow():%d %b %Y}"
+          # Read the portfolio analysis stashed by the generation step. The
+          # T212 integration step is expected to write this; we degrade
+          # gracefully without it.
+          portfolio_data = None
+          try:
+              with open("reports/portfolio_analysis.json") as f:
+                  portfolio_data = json.load(f)
+          except FileNotFoundError:
+              print("No portfolio_analysis.json — sending email without inline portfolio block")
+
+          public_url = os.environ.get("PUBLIC_REPORT_URL")
+          body_html = report_mod.generate_summary_email_html(
+              db_path="screener.db",
+              full_report_url=public_url,
+              portfolio_data=portfolio_data,
+              heading_suffix="Portfolio Report",
+              attachment_note="Full Portfolio Dashboard attached as portfolio_report.html",
+          )
+
+          with open("reports/portfolio_report.html", "rb") as f:
+              attachment_b64 = base64.b64encode(f.read()).decode("ascii")
+
           payload = {
               "from": sender,
-              "to": recipients,
+              "to": [owner],
               "subject": subject,
-              "html": html,
+              "html": body_html,
+              "attachments": [{
+                  "filename": "portfolio_report.html",
+                  "content": attachment_b64,
+              }],
           }
-          print(f"Sending to {len(recipients)} recipient(s)")
+          print(f"Sending portfolio email to 1 recipient ({owner})")
           try:
               resp = requests.post(
                   "https://api.resend.com/emails",
@@ -97,19 +145,81 @@ jobs:
                   timeout=60,
               )
           except Exception as e:
-              print(f"Resend request failed: {e}")
+              print(f"Portfolio email request failed: {e}")
               sys.exit(0)
-
           if resp.status_code >= 300:
               print(f"Resend returned {resp.status_code}: {resp.text}")
           else:
               try:
                   msg_id = resp.json().get("id", "(no id)")
               except Exception:
-                  msg_id = "(unparseable response)"
-              print(f"Email sent successfully — id={msg_id}")
+                  msg_id = "(unparseable)"
+              print(f"Portfolio email sent — id={msg_id}")
           PY
 
+      # ---- Email 2: Public summary (everyone) ----
+      - name: Send public summary email
+        if: success()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          REPORT_EMAIL_FROM: ${{ secrets.REPORT_EMAIL_FROM }}
+          REPORT_EMAIL_TO: ${{ secrets.REPORT_EMAIL_TO }}
+          RUN_DATE: ${{ steps.date.outputs.value }}
+        run: |
+          python <<'PY'
+          import json, os, sys
+          from datetime import datetime
+          import requests
+
+          import report as report_mod
+
+          api_key = os.environ.get("RESEND_API_KEY")
+          sender = os.environ.get("REPORT_EMAIL_FROM")
+          recipient_raw = os.environ.get("REPORT_EMAIL_TO") or ""
+          recipients = [a.strip() for a in recipient_raw.split(",") if a.strip()]
+          if not (api_key and sender and recipients):
+              print("Resend secrets not configured — skipping public email")
+              sys.exit(0)
+
+          subject = f"StockBoard Daily Report — {datetime.utcnow():%d %b %Y}"
+          public_url = os.environ.get("PUBLIC_REPORT_URL")
+          body_html = report_mod.generate_summary_email_html(
+              db_path="screener.db",
+              full_report_url=public_url,
+              portfolio_data=None,
+              heading_suffix="Daily Report",
+          )
+          payload = {
+              "from": sender,
+              "to": recipients,
+              "subject": subject,
+              "html": body_html,
+          }
+          print(f"Sending public email to {len(recipients)} recipient(s)")
+          try:
+              resp = requests.post(
+                  "https://api.resend.com/emails",
+                  headers={
+                      "Authorization": f"Bearer {api_key}",
+                      "Content-Type": "application/json",
+                  },
+                  data=json.dumps(payload),
+                  timeout=60,
+              )
+          except Exception as e:
+              print(f"Public email request failed: {e}")
+              sys.exit(0)
+          if resp.status_code >= 300:
+              print(f"Resend returned {resp.status_code}: {resp.text}")
+          else:
+              try:
+                  msg_id = resp.json().get("id", "(no id)")
+              except Exception:
+                  msg_id = "(unparseable)"
+              print(f"Public email sent — id={msg_id}")
+          PY
+
+      # ---- Commit: only the PUBLIC report + DB (portfolio_report.html is gitignored) ----
       - name: Commit report and DB
         if: success()
         run: |
@@ -124,13 +234,23 @@ jobs:
             git push
           fi
 
-      - name: Upload report artifact
+      # ---- Artifacts: public (30 day) + private (7 day, conditional) ----
+      - name: Upload public report artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: daily-report-${{ steps.date.outputs.value }}
           path: reports/daily_report.html
           retention-days: 30
+          overwrite: true
+
+      - name: Upload portfolio report artifact
+        if: success() && hashFiles('reports/portfolio_report.html') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-report-${{ steps.date.outputs.value }}
+          path: reports/portfolio_report.html
+          retention-days: 7
           overwrite: true
 
   notify-on-failure:
