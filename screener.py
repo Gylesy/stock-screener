@@ -20,6 +20,12 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import pandas as pd
 import yfinance as yf
 
@@ -544,6 +550,36 @@ def main() -> int:
         report_mod.generate_report(db_path=args.db, output_path=args.report,
                                    run_date=summary["run_date"])
         print(f"HTML report written to {args.report}")
+
+        # Portfolio side-track — only runs when T212_API_KEY is set
+        api_key = (os.environ.get("T212_API_KEY") or "").strip()
+        if api_key:
+            try:
+                from t212_fetcher import fetch_t212_portfolio
+                from portfolio import analyse_portfolio, generate_trade_suggestions
+                import json as _json
+                print()
+                print("Fetching Trading 212 portfolio...")
+                t212_data = fetch_t212_portfolio()
+                analysis = analyse_portfolio(t212_data["positions"], db_path=args.db)
+                analysis["suggestions"] = generate_trade_suggestions(analysis)
+                # Persist alongside the HTML so the workflow's email step can inline it.
+                with open("reports/portfolio_analysis.json", "w") as f:
+                    _json.dump(analysis, f, indent=2, default=str)
+                report_mod.generate_report(
+                    db_path=args.db,
+                    output_path="reports/portfolio_report.html",
+                    include_portfolio=True,
+                    portfolio_data=analysis,
+                    run_date=summary["run_date"],
+                )
+                print(f"Portfolio report generated: {analysis['n_positions']} positions, "
+                      f"health score {analysis['health_score']}")
+            except Exception as e:
+                print(f"Portfolio fetch failed: {type(e).__name__}: {e} — "
+                      f"continuing without portfolio report")
+        else:
+            print("T212_API_KEY not set — skipping portfolio report")
     return 0 if summary["failed"] == 0 else 1
 
 

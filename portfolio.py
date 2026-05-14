@@ -17,6 +17,7 @@ Position input shape:
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Dict, List, Optional, Tuple
 
 
@@ -117,7 +118,38 @@ def _health_score(analysis: dict) -> Tuple[float, Dict[str, float]]:
     return round(score, 1), components
 
 
-def analyse_portfolio(positions: List[dict]) -> dict:
+def _enrich_from_db(positions: List[dict], db_path: str) -> List[dict]:
+    """Fill composite_score and sector for positions from the latest run in screener.db."""
+    tickers = [p["ticker"] for p in positions if p.get("ticker")]
+    if not tickers:
+        return positions
+    placeholders = ",".join(["?"] * len(tickers))
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        f"""SELECT ticker, score_composite, sector
+            FROM daily_metrics
+            WHERE run_date = (SELECT MAX(run_date) FROM daily_metrics)
+              AND ticker IN ({placeholders})""",
+        tickers,
+    ).fetchall()
+    conn.close()
+    ctx = {r["ticker"]: dict(r) for r in rows}
+    enriched = []
+    for p in positions:
+        c = ctx.get(p.get("ticker", ""), {})
+        out = dict(p)
+        if out.get("composite_score") is None and c.get("score_composite") is not None:
+            out["composite_score"] = c["score_composite"]
+        if not out.get("sector") and c.get("sector"):
+            out["sector"] = c["sector"]
+        enriched.append(out)
+    return enriched
+
+
+def analyse_portfolio(positions: List[dict], db_path: Optional[str] = None) -> dict:
+    if db_path:
+        positions = _enrich_from_db(positions, db_path)
     analysed = [analyse_position(p) for p in positions]
     total_value = sum(p["current_value"] for p in analysed)
     total_cost = sum(p["cost_basis"] for p in analysed)

@@ -5,3 +5,4 @@ beautifulsoup4
 tabulate
 colorama
 jinja2
+python-dotenv
