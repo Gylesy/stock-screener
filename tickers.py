@@ -29,6 +29,7 @@ RUSSELL1000_IWB_CSV_URL = (
     "1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
 )
 RUSSELL2000_CSV = "russell2000.csv"
+WATCHLIST_CSV = "watchlist.csv"
 
 # Tickers that aren't real equities (ETF holdings CSVs include placeholders).
 _NON_EQUITY_PREFIXES = ("USD", "EUR", "GBP", "JPY", "CASH", "MARGIN", "XTSLA")
@@ -232,6 +233,31 @@ def fetch_russell1000() -> List[str]:
     return tickers
 
 
+def load_watchlist(filepath: str = WATCHLIST_CSV) -> List[str]:
+    """Load manually-curated tickers from a CSV (one ticker per row, header skipped).
+
+    Rows where the ticker cell is empty or starts with `#` are ignored.
+    Returns [] silently if the file doesn't exist.
+    """
+    if not os.path.exists(filepath):
+        print(f"[tickers] Watchlist: not found, skipping ({filepath})")
+        return []
+    tickers: List[str] = []
+    with open(filepath, newline="") as f:
+        reader = csv.reader(f)
+        for i, row in enumerate(reader):
+            if not row:
+                continue
+            sym = row[0].strip()
+            if i == 0 and sym.lower() in {"symbol", "ticker"}:
+                continue
+            if not sym or sym.startswith("#"):
+                continue
+            tickers.append(sym.upper())
+    print(f"[tickers] Watchlist: {len(tickers)} tickers loaded")
+    return tickers
+
+
 def load_russell2000() -> List[str]:
     # Russell 2000 constituents aren't published on Wikipedia. Drop a CSV with
     # one symbol per line (header optional) at RUSSELL2000_CSV to populate.
@@ -260,6 +286,7 @@ def get_universe(verbose: bool = True) -> Dict[str, Set[str]]:
         "RUSSELL2000": load_russell2000(),
         "FTSE100": fetch_ftse100(),
         "FTSE250": fetch_ftse250(),
+        "WATCHLIST": load_watchlist(),
     }
     if verbose:
         for name, tickers in sources.items():

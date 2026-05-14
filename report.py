@@ -112,7 +112,11 @@ INDEX_PILL_CLASS = {
     "FTSE100": "pill-ftse100",
     "FTSE250": "pill-ftse250",
     "RUSSELL2000": "pill-russell2000",
+    "WATCHLIST": "pill-watchlist",
 }
+
+# Short labels for pills where the full index name is awkward in the UI.
+INDEX_PILL_LABEL = {"WATCHLIST": "WL"}
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +235,8 @@ def _index_pills_html(indices_str: str) -> str:
     parts = []
     for idx in sorted(s for s in (indices_str or "").split(",") if s):
         cls = INDEX_PILL_CLASS.get(idx, "pill-other")
-        parts.append(f'<span class="pill {cls}">{idx}</span>')
+        label = INDEX_PILL_LABEL.get(idx, idx)
+        parts.append(f'<span class="pill {cls}">{label}</span>')
     return " ".join(parts)
 
 
@@ -656,6 +661,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
   .pill-ftse100     { background: #c62828; }
   .pill-ftse250     { background: #ad4e00; }
   .pill-russell2000 { background: #2e7d32; }
+  .pill-watchlist   { background: #e0e0e0; color: #555; border: 1px solid #c5c5c5; font-weight: 700; }
   .pill-other       { background: #555; }
   .top-picks {
     background: #eef5ff; border-left: 4px solid #2c6cb0;
@@ -1364,9 +1370,17 @@ def generate_report(db_path: str, output_path: str,
         idx_set = {s for s in idx_str.split(",") if s}
         for name in idx_set:
             index_counts[name] = index_counts.get(name, 0) + 1
-        if idx_set & {"SP500", "NASDAQ100", "RUSSELL1000"}:
+        is_us = bool(idx_set & {"SP500", "NASDAQ100", "RUSSELL1000"})
+        is_uk = bool(idx_set & {"FTSE100", "FTSE250"})
+        # Watchlist-only tickers route by suffix.
+        if not is_us and not is_uk and "WATCHLIST" in idx_set:
+            if r["ticker"].upper().endswith(".L"):
+                is_uk = True
+            else:
+                is_us = True
+        if is_us:
             us_raw.append(r)
-        if idx_set & {"FTSE100", "FTSE250"}:
+        if is_uk:
             uk_raw.append(r)
 
     sections = [
